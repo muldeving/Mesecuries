@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Convertisseur de factures CSV</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --text: #1b1f24;
+    --muted: #57606a;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --accent-hover: #0860c7;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --err: #cf222e;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --accent: #2f81f7;
+      --accent-hover: #388bfd;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --err: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  .container { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p.sub { margin: 0 0 20px; color: var(--muted); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; margin-bottom: 16px;
+  }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  input[type=file] {
+    padding: 8px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  button {
+    padding: 8px 16px; border: 0; border-radius: 6px;
+    background: var(--accent); color: white; font-weight: 600; cursor: pointer;
+    font-size: 14px;
+  }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary {
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  .status { margin-top: 12px; font-size: 14px; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+  .status.warn { color: var(--warn); }
+  pre {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 16px;
+    font-family: var(--mono); font-size: 13px;
+    white-space: pre; overflow-x: auto; margin: 0;
+  }
+  label { font-weight: 600; font-size: 14px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Convertisseur de factures / avoirs → écritures comptables</h1>
+  <p class="sub">Convertit un fichier CSV (séparateur <code>;</code>, encodage Windows-1252) en écritures comptables. Tout se passe localement dans votre navigateur, aucun fichier n'est envoyé.</p>
+
+  <div class="panel">
+    <label for="file">Fichier d'entrée (in.csv)</label>
+    <div class="row" style="margin-top: 8px;">
+      <input type="file" id="file" accept=".csv,text/csv">
+      <button id="convert" disabled>Convertir</button>
+      <button id="download" class="secondary" disabled>Télécharger out.csv</button>
+    </div>
+    <div class="hint">Colonnes attendues : Type, Date, Numéro, Objet, Total HT, Total TVA, Total TTC (et si présentes : Référence du client, Nom du client). Encodage UTF-8 ou Windows-1252 détecté automatiquement.</div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div class="panel" id="reportPanel" style="display:none;">
+    <label>Compte rendu du traitement</label>
+    <pre id="report" style="margin-top: 8px;"></pre>
+  </div>
+</div>
+
+<script>
+// --- Windows-1252 <-> Unicode ---
+// Décodage : TextDecoder gère nativement 'windows-1252'.
+// Encodage : table pour les caractères 0x80-0x9F ; le reste 0x00-0xFF correspond à Unicode.
+const win1252Extra = {
+  0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
+  0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+  0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
+  0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+  0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
+  0x017E: 0x9E, 0x0178: 0x9F,
+};
+function encodeWin1252(str) {
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) {
+    const cp = str.charCodeAt(i);
+    if (cp <= 0xFF && !(cp >= 0x80 && cp <= 0x9F)) {
+      bytes[i] = cp;
+    } else if (win1252Extra[cp] !== undefined) {
+      bytes[i] = win1252Extra[cp];
+    } else {
+      bytes[i] = 0x3F; // '?' pour les caractères non représentables
+    }
+  }
+  return bytes;
+}
+
+// --- Analyseur CSV (délimiteur ; avec guillemets) ---
+function parseCSV(text, delimiter=';') {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else {
+      if (c === '"') { inQuotes = true; }
+      else if (c === delimiter) { row.push(field); field = ''; }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else if (c === '\r') { /* skip */ }
+      else { field += c; }
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// --- Sérialisation CSV ---
+function serializeCSV(rows, delimiter=';') {
+  return rows.map(row => row.map(v => {
+    const s = (v === null || v === undefined) ? '' : String(v);
+    if (s.includes('"') || s.includes(delimiter) || s.includes('\n') || s.includes('\r')) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }).join(delimiter)).join('\r\n');
+}
+
+// Normalise un nom de colonne : supprime BOM, trim, réduit les espaces multiples à un seul.
+function normKey(k) {
+  return (k || '').replace(/^﻿/, '').trim().replace(/\s+/g, ' ');
+}
+
+// --- Conversion (portage de test.py, adapté au nouveau format) ---
+function convertir(rows) {
+  const enTeteSortie = ['Journal','Date','Compte','Nom','Code','Dénomination','Débit','Crédit','Lettrage','Code TVA'];
+  const lignesSortie = [enTeteSortie];
+
+  let nbFactures = 0, htFactures = 0, tvaFactures = 0, ttcFactures = 0;
+  let nbAvoirs = 0, htAvoirs = 0, tvaAvoirs = 0, ttcAvoirs = 0;
+  const warnings = [];
+
+  if (rows.length === 0) throw new Error("Fichier vide.");
+  const idx = {};
+  rows[0].forEach((h, i) => { idx[normKey(h)] = i; });
+
+  const need = ['Type','Date','Numéro','Objet','Total HT','Total TVA','Total TTC'];
+  const missing = need.filter(k => idx[k] === undefined);
+  if (missing.length) throw new Error("Colonnes manquantes : " + missing.join(', '));
+
+  const hasNomClient = idx['Nom du client'] !== undefined;
+  const hasRefClient = idx['Référence du client'] !== undefined;
+
+  for (let r = 1; r < rows.length; r++) {
+    const raw = rows[r];
+    if (raw.length === 1 && raw[0].trim() === '') continue; // ligne vide
+    const get = k => (raw[idx[k]] || '').trim();
+    const typeDoc = get('Type');
+    const date = get('Date');
+    const numero = get('Numéro');
+    const objet = get('Objet');
+    const nomClient = hasNomClient ? get('Nom du client') : 'test';
+    const refClient = hasRefClient ? get('Référence du client') : '';
+    const totalHtStr = get('Total HT');
+    const totalTvaStr = get('Total TVA');
+    const totalTtcStr = get('Total TTC');
+
+    const totalHt = parseFloat(totalHtStr.replace(',', '.'));
+    const totalTva = parseFloat(totalTvaStr.replace(',', '.'));
+    const totalTtc = parseFloat(totalTtcStr.replace(',', '.'));
+    if (Number.isNaN(totalHt) || Number.isNaN(totalTva) || Number.isNaN(totalTtc)) {
+      warnings.push(`Ligne ${r+1} ignorée (format de nombre invalide).`);
+      continue;
+    }
+
+    if (typeDoc === 'Facture') {
+      nbFactures++; htFactures += totalHt; tvaFactures += totalTva; ttcFactures += totalTtc;
+    } else if (typeDoc === 'Avoir') {
+      nbAvoirs++; htAvoirs += totalHt; tvaAvoirs += totalTva; ttcAvoirs += totalTtc;
+    }
+
+    let codeTva = '', compteTva = '';
+    if (totalHt > 0) {
+      const taux = (totalTva / totalHt) * 100;
+      if (taux > 5.0 && taux < 6.0) { codeTva = 'v'; compteTva = '445715'; }
+      else if (taux > 9.5 && taux < 10.5) { codeTva = 'p'; compteTva = '445712'; }
+    }
+
+    let debitHt = '', creditHt = '', debitTva = '', creditTva = '';
+    if (typeDoc === 'Avoir') { debitHt = totalHtStr; debitTva = totalTvaStr; }
+    else { creditHt = totalHtStr; creditTva = totalTvaStr; }
+
+    const code = refClient || numero;
+    lignesSortie.push(['2', date, '7061', nomClient, code, objet, debitHt, creditHt, '', codeTva]);
+    lignesSortie.push(['2', date, compteTva, nomClient, code, objet, debitTva, creditTva, '', codeTva]);
+  }
+
+  const netHt = htFactures - htAvoirs;
+  const netTva = tvaFactures - tvaAvoirs;
+  const netTtc = ttcFactures - ttcAvoirs;
+
+  const pad = n => n.toFixed(2).padStart(12, ' ');
+  const sep = '='.repeat(45);
+  const sep2 = '-'.repeat(45);
+  let rapport = '';
+  rapport += sep + '\n';
+  rapport += '      📝 COMPTE RENDU DU TRAITEMENT\n';
+  rapport += sep + '\n';
+  rapport += `Factures traitées : ${nbFactures}\n`;
+  rapport += `  - Cumul HT   : ${pad(htFactures)} €\n`;
+  rapport += `  - Cumul TVA  : ${pad(tvaFactures)} €\n`;
+  rapport += `  - Cumul TTC  : ${pad(ttcFactures)} €\n`;
+  if (nbAvoirs > 0) {
+    rapport += sep2 + '\n';
+    rapport += `Avoirs traités    : ${nbAvoirs}\n`;
+    rapport += `  - Cumul HT   : ${pad(htAvoirs)} €\n`;
+    rapport += `  - Cumul TVA  : ${pad(tvaAvoirs)} €\n`;
+    rapport += `  - Cumul TTC  : ${pad(ttcAvoirs)} €\n`;
+  }
+  rapport += sep + '\n';
+  rapport += 'SOLDE NET (Factures - Avoirs)\n';
+  rapport += `  - Solde HT     : ${pad(netHt)} €\n`;
+  rapport += `  - Solde TVA    : ${pad(netTva)} €\n`;
+  rapport += `  - Solde TTC    : ${pad(netTtc)} €\n`;
+  rapport += sep;
+
+  return { rows: lignesSortie, rapport, warnings };
+}
+
+// --- UI ---
+const fileInput = document.getElementById('file');
+const btnConvert = document.getElementById('convert');
+const btnDownload = document.getElementById('download');
+const statusEl = document.getElementById('status');
+const reportPanel = document.getElementById('reportPanel');
+const reportEl = document.getElementById('report');
+
+let selectedFile = null;
+let outputBlobUrl = null;
+
+fileInput.addEventListener('change', () => {
+  selectedFile = fileInput.files[0] || null;
+  btnConvert.disabled = !selectedFile;
+  btnDownload.disabled = true;
+  statusEl.textContent = selectedFile ? `Fichier sélectionné : ${selectedFile.name}` : '';
+  statusEl.className = 'status';
+  reportPanel.style.display = 'none';
+  if (outputBlobUrl) { URL.revokeObjectURL(outputBlobUrl); outputBlobUrl = null; }
+});
+
+// Détecte l'encodage d'entrée : UTF-8 BOM, UTF-8 strict, sinon Windows-1252.
+function decodeAuto(buf) {
+  const u8 = new Uint8Array(buf);
+  if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) {
+    return { text: new TextDecoder('utf-8').decode(u8.subarray(3)), encoding: 'utf-8' };
+  }
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(u8);
+    return { text, encoding: 'utf-8' };
+  } catch (_) {
+    return { text: new TextDecoder('windows-1252').decode(u8), encoding: 'windows-1252' };
+  }
+}
+
+btnConvert.addEventListener('click', async () => {
+  if (!selectedFile) return;
+  statusEl.textContent = 'Conversion en cours…';
+  statusEl.className = 'status';
+  try {
+    const buf = await selectedFile.arrayBuffer();
+    const { text, encoding } = decodeAuto(buf);
+    const rows = parseCSV(text, ';');
+    const { rows: outRows, rapport, warnings } = convertir(rows);
+    const csvText = serializeCSV(outRows, ';');
+    let bytes, mime;
+    if (encoding === 'utf-8') {
+      // BOM UTF-8 pour la compatibilité Excel.
+      const utf8 = new TextEncoder().encode(csvText);
+      bytes = new Uint8Array(utf8.length + 3);
+      bytes[0] = 0xEF; bytes[1] = 0xBB; bytes[2] = 0xBF;
+      bytes.set(utf8, 3);
+      mime = 'text/csv;charset=utf-8';
+    } else {
+      bytes = encodeWin1252(csvText);
+      mime = 'text/csv;charset=windows-1252';
+    }
+    const blob = new Blob([bytes], { type: mime });
+    if (outputBlobUrl) URL.revokeObjectURL(outputBlobUrl);
+    outputBlobUrl = URL.createObjectURL(blob);
+
+    reportEl.textContent = rapport;
+    reportPanel.style.display = 'block';
+
+    let msg = '✅ Conversion terminée. Cliquez sur « Télécharger out.csv ».';
+    if (warnings.length) msg += ' ⚠️ ' + warnings.length + ' ligne(s) ignorée(s).';
+    statusEl.textContent = msg;
+    statusEl.className = warnings.length ? 'status warn' : 'status ok';
+    btnDownload.disabled = false;
+  } catch (e) {
+    statusEl.textContent = '❌ Erreur : ' + e.message;
+    statusEl.className = 'status err';
+    btnDownload.disabled = true;
+  }
+});
+
+btnDownload.addEventListener('click', () => {
+  if (!outputBlobUrl) return;
+  const a = document.createElement('a');
+  a.href = outputBlobUrl;
+  a.download = 'out.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+});
+</script>
+</body>
+</html>
