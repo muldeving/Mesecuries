@@ -88,7 +88,7 @@
       <button id="convert" disabled>Convertir</button>
       <button id="download" class="secondary" disabled>Télécharger out.csv</button>
     </div>
-    <div class="hint">Le fichier doit contenir les colonnes : Type, Date, Numéro, Objet, Total HT, Total TVA, Total TTC.</div>
+    <div class="hint">Colonnes attendues : Type, Date, Numéro, Objet, Total HT, Total TVA, Total TTC (et si présentes : Référence du client, Nom du client). Encodage UTF-8 ou Windows-1252 détecté automatiquement.</div>
     <div id="status" class="status"></div>
   </div>
 
@@ -161,7 +161,12 @@ function serializeCSV(rows, delimiter=';') {
   }).join(delimiter)).join('\r\n');
 }
 
-// --- Conversion (portage fidèle de test.py) ---
+// Normalise un nom de colonne : supprime BOM, trim, réduit les espaces multiples à un seul.
+function normKey(k) {
+  return (k || '').replace(/^﻿/, '').trim().replace(/\s+/g, ' ');
+}
+
+// --- Conversion (portage de test.py, adapté au nouveau format) ---
 function convertir(rows) {
   const enTeteSortie = ['Journal','Date','Compte','Nom','Code','Dénomination','Débit','Crédit','Lettrage','Code TVA'];
   const lignesSortie = [enTeteSortie];
@@ -171,23 +176,15 @@ function convertir(rows) {
   const warnings = [];
 
   if (rows.length === 0) throw new Error("Fichier vide.");
-  const header = rows[0].map(h => h.trim());
   const idx = {};
-  header.forEach((h, i) => { idx[h] = i; });
+  rows[0].forEach((h, i) => { idx[normKey(h)] = i; });
 
-  const need = ['Type','Date','Numéro','Objet','Total  HT','Total  TVA','Total  TTC'];
+  const need = ['Type','Date','Numéro','Objet','Total HT','Total TVA','Total TTC'];
   const missing = need.filter(k => idx[k] === undefined);
-  if (missing.length) {
-    // Tolère 1 ou 2 espaces dans « Total  HT »
-    const alt = { 'Total  HT':'Total HT', 'Total  TVA':'Total TVA', 'Total  TTC':'Total TTC' };
-    for (const k of missing.slice()) {
-      if (alt[k] && idx[alt[k]] !== undefined) {
-        idx[k] = idx[alt[k]];
-        missing.splice(missing.indexOf(k), 1);
-      }
-    }
-    if (missing.length) throw new Error("Colonnes manquantes : " + missing.join(', '));
-  }
+  if (missing.length) throw new Error("Colonnes manquantes : " + missing.join(', '));
+
+  const hasNomClient = idx['Nom du client'] !== undefined;
+  const hasRefClient = idx['Référence du client'] !== undefined;
 
   for (let r = 1; r < rows.length; r++) {
     const raw = rows[r];
@@ -197,9 +194,11 @@ function convertir(rows) {
     const date = get('Date');
     const numero = get('Numéro');
     const objet = get('Objet');
-    const totalHtStr = get('Total  HT');
-    const totalTvaStr = get('Total  TVA');
-    const totalTtcStr = get('Total  TTC');
+    const nomClient = hasNomClient ? get('Nom du client') : 'test';
+    const refClient = hasRefClient ? get('Référence du client') : '';
+    const totalHtStr = get('Total HT');
+    const totalTvaStr = get('Total TVA');
+    const totalTtcStr = get('Total TTC');
 
     const totalHt = parseFloat(totalHtStr.replace(',', '.'));
     const totalTva = parseFloat(totalTvaStr.replace(',', '.'));
@@ -226,8 +225,9 @@ function convertir(rows) {
     if (typeDoc === 'Avoir') { debitHt = totalHtStr; debitTva = totalTvaStr; }
     else { creditHt = totalHtStr; creditTva = totalTvaStr; }
 
-    lignesSortie.push(['2', date, '7061', 'test', numero, objet, debitHt, creditHt, '', codeTva]);
-    lignesSortie.push(['2', date, compteTva, 'test', numero, objet, debitTva, creditTva, '', codeTva]);
+    const code = refClient || numero;
+    lignesSortie.push(['2', date, '7061', nomClient, code, objet, debitHt, creditHt, '', codeTva]);
+    lignesSortie.push(['2', date, compteTva, nomClient, code, objet, debitTva, creditTva, '', codeTva]);
   }
 
   const netHt = htFactures - htAvoirs;
@@ -283,18 +283,43 @@ fileInput.addEventListener('change', () => {
   if (outputBlobUrl) { URL.revokeObjectURL(outputBlobUrl); outputBlobUrl = null; }
 });
 
+// Détecte l'encodage d'entrée : UTF-8 BOM, UTF-8 strict, sinon Windows-1252.
+function decodeAuto(buf) {
+  const u8 = new Uint8Array(buf);
+  if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) {
+    return { text: new TextDecoder('utf-8').decode(u8.subarray(3)), encoding: 'utf-8' };
+  }
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(u8);
+    return { text, encoding: 'utf-8' };
+  } catch (_) {
+    return { text: new TextDecoder('windows-1252').decode(u8), encoding: 'windows-1252' };
+  }
+}
+
 btnConvert.addEventListener('click', async () => {
   if (!selectedFile) return;
   statusEl.textContent = 'Conversion en cours…';
   statusEl.className = 'status';
   try {
     const buf = await selectedFile.arrayBuffer();
-    const text = new TextDecoder('windows-1252').decode(buf);
+    const { text, encoding } = decodeAuto(buf);
     const rows = parseCSV(text, ';');
     const { rows: outRows, rapport, warnings } = convertir(rows);
     const csvText = serializeCSV(outRows, ';');
-    const bytes = encodeWin1252(csvText);
-    const blob = new Blob([bytes], { type: 'text/csv;charset=windows-1252' });
+    let bytes, mime;
+    if (encoding === 'utf-8') {
+      // BOM UTF-8 pour la compatibilité Excel.
+      const utf8 = new TextEncoder().encode(csvText);
+      bytes = new Uint8Array(utf8.length + 3);
+      bytes[0] = 0xEF; bytes[1] = 0xBB; bytes[2] = 0xBF;
+      bytes.set(utf8, 3);
+      mime = 'text/csv;charset=utf-8';
+    } else {
+      bytes = encodeWin1252(csvText);
+      mime = 'text/csv;charset=windows-1252';
+    }
+    const blob = new Blob([bytes], { type: mime });
     if (outputBlobUrl) URL.revokeObjectURL(outputBlobUrl);
     outputBlobUrl = URL.createObjectURL(blob);
 
