@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Convertisseur ventes et règlements</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --text: #1b1f24;
+    --muted: #57606a;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --accent-hover: #0860c7;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --err: #cf222e;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --border: #30363d;
+      --accent: #2f81f7;
+      --accent-hover: #388bfd;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --err: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  p.sub { margin: 0 0 20px; color: var(--muted); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; margin-bottom: 16px;
+  }
+  .panel-title { font-weight: 700; font-size: 15px; margin: 0 0 10px; }
+  .grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+  .grid.params { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .field label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  input[type=file] {
+    width: 100%;
+    padding: 8px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  input[type=text] {
+    width: 100%;
+    padding: 6px 8px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: var(--mono); font-size: 14px;
+  }
+  button {
+    padding: 8px 16px; border: 0; border-radius: 6px;
+    background: var(--accent); color: white; font-weight: 600; cursor: pointer;
+    font-size: 14px;
+  }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.secondary {
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  button.link {
+    background: transparent; color: var(--muted); padding: 4px 0;
+    font-weight: 400; font-size: 13px; text-decoration: underline;
+  }
+  button.link:hover:not(:disabled) { background: transparent; color: var(--text); }
+  .status { margin-top: 12px; font-size: 14px; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--err); }
+  .status.warn { color: var(--warn); }
+  pre {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 16px;
+    font-family: var(--mono); font-size: 13px;
+    white-space: pre; overflow-x: auto; margin: 0;
+  }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Convertisseur factures + règlements → écritures comptables</h1>
+  <p class="sub">Génère les écritures de ventes (vente / TVA / client) et les écritures d'encaissement (client / 58000) à partir de deux fichiers CSV (séparateur <code>;</code>). Tout se passe localement dans votre navigateur, aucun fichier n'est envoyé.</p>
+
+  <div class="panel">
+    <div class="panel-title">1. Fichiers d'entrée</div>
+    <div class="grid">
+      <div class="field">
+        <label for="fileFactures">Fichier factures / avoirs</label>
+        <input type="file" id="fileFactures" accept=".csv,text/csv">
+        <div class="hint">Colonnes : Type, Date, Numéro, Objet, Total HT, Total TVA, Total TTC (et si présentes : Référence du client, Nom du client).</div>
+      </div>
+      <div class="field">
+        <label for="fileReglements">Fichier règlements</label>
+        <input type="file" id="fileReglements" accept=".csv,text/csv">
+        <div class="hint">Colonnes : NUMERO, DATE REGLEMENT, FACTURE(s) REGLEE(s), MONTANT IMPUTE (et si présentes : MODE REGLEMENT, MONTANT, COMPTE(s) CLIENT, NOM(s) CAVALIER(s), ETAT, LIBELLE).</div>
+      </div>
+    </div>
+    <div class="hint" style="margin-top: 10px;">Encodage UTF-8 ou Windows-1252 détecté automatiquement. Le fichier de sortie reprend l'encodage du fichier factures.</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">2. Paramètres</div>
+    <div class="grid params">
+      <div class="field"><label for="pJournalVentes">Journal ventes</label><input type="text" id="pJournalVentes"></div>
+      <div class="field"><label for="pJournalReglements">Journal règlements</label><input type="text" id="pJournalReglements"></div>
+      <div class="field"><label for="pCompteVente">Compte de vente</label><input type="text" id="pCompteVente"></div>
+      <div class="field"><label for="pCompteClient">Compte client</label><input type="text" id="pCompteClient"></div>
+      <div class="field"><label for="pCompteEncaissement">Compte d'encaissement</label><input type="text" id="pCompteEncaissement"></div>
+    </div>
+    <div class="row" style="margin-top: 8px;">
+      <button id="resetParams" class="link" type="button">Rétablir les valeurs par défaut</button>
+    </div>
+    <div class="hint">TVA : 5,5 % → 445715 (code v), 10 % → 445712 (code p), 20 % → 445726 (code Y).</div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">3. Conversion</div>
+    <div class="row">
+      <button id="convert" disabled>Convertir</button>
+      <button id="download" class="secondary" disabled>Télécharger out.csv</button>
+    </div>
+    <div id="status" class="status"></div>
+  </div>
+
+  <div class="panel" id="reportPanel" style="display:none;">
+    <div class="panel-title">Compte rendu du traitement</div>
+    <pre id="report"></pre>
+  </div>
+</div>
+
+<script>
+// ===================================================================
+// Outils génériques (encodage, CSV)
+// ===================================================================
+
+// --- Windows-1252 <-> Unicode ---
+// Décodage : TextDecoder gère nativement 'windows-1252'.
+// Encodage : table pour les caractères 0x80-0x9F ; le reste 0x00-0xFF correspond à Unicode.
+const win1252Extra = {
+  0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
+  0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+  0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
+  0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+  0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
+  0x017E: 0x9E, 0x0178: 0x9F,
+};
+function encodeWin1252(str) {
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) {
+    const cp = str.charCodeAt(i);
+    if (cp <= 0xFF && !(cp >= 0x80 && cp <= 0x9F)) {
+      bytes[i] = cp;
+    } else if (win1252Extra[cp] !== undefined) {
+      bytes[i] = win1252Extra[cp];
+    } else {
+      bytes[i] = 0x3F; // '?' pour les caractères non représentables
+    }
+  }
+  return bytes;
+}
+
+// Détecte l'encodage d'entrée : UTF-8 BOM, UTF-8 strict, sinon Windows-1252.
+function decodeAuto(buf) {
+  const u8 = new Uint8Array(buf);
+  if (u8.length >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) {
+    return { text: new TextDecoder('utf-8').decode(u8.subarray(3)), encoding: 'utf-8' };
+  }
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(u8);
+    return { text, encoding: 'utf-8' };
+  } catch (_) {
+    return { text: new TextDecoder('windows-1252').decode(u8), encoding: 'windows-1252' };
+  }
+}
+
+// --- Analyseur CSV (délimiteur ; avec guillemets) ---
+function parseCSV(text, delimiter=';') {
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else {
+      if (c === '"') { inQuotes = true; }
+      else if (c === delimiter) { row.push(field); field = ''; }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else if (c === '\r') { /* skip */ }
+      else { field += c; }
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// --- Sérialisation CSV ---
+function serializeCSV(rows, delimiter=';') {
+  return rows.map(row => row.map(v => {
+    const s = (v === null || v === undefined) ? '' : String(v);
+    if (s.includes('"') || s.includes(delimiter) || s.includes('\n') || s.includes('\r')) {
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }).join(delimiter)).join('\r\n');
+}
+
+// Normalise un nom de colonne : supprime BOM, trim, réduit les espaces multiples à un seul.
+function normKey(k) {
+  return (k || '').replace(/^﻿/, '').trim().replace(/\s+/g, ' ');
+}
+function sansAccents(s) {
+  return (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+// Colonnes du fichier règlements : insensible à la casse et aux accents.
+function normKeyMaj(k) {
+  return sansAccents(normKey(k)).toUpperCase();
+}
+function estLigneVide(raw) {
+  return raw.every(v => (v || '').trim() === '');
+}
+
+// --- Nombres ---
+// Accepte « 80 », « 80,00 », « 80.00 », « 1 234,56 », « 1.234,56 », « 1,234.56 ».
+function parseMontant(str) {
+  let s = (str || '').replace(/[\s  €]/g, '');
+  if (s === '') return NaN;
+  const iVirgule = s.lastIndexOf(','), iPoint = s.lastIndexOf('.');
+  if (iVirgule >= 0 && iPoint >= 0) {
+    s = iVirgule > iPoint ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '');
+  } else if (iVirgule >= 0) {
+    s = s.replace(',', '.');
+  }
+  return parseFloat(s);
+}
+const EPS = 0.005;
+const arrondi = x => Math.round((x + Number.EPSILON) * 100) / 100;
+const ecart = (a, b) => Math.abs(arrondi(a) - arrondi(b)) > EPS;
+// Montant pour le fichier de sortie : 2 décimales, virgule.
+const fmtCsv = x => arrondi(x).toFixed(2).replace('.', ',');
+// Montant pour le rapport.
+const m2 = x => arrondi(x).toFixed(2);
+
+// Place un montant au débit ou au crédit (un montant négatif passe de l'autre côté).
+function sens(montant, cote) {
+  const a = fmtCsv(Math.abs(montant));
+  const auDebit = (montant >= 0) === (cote === 'D');
+  return auDebit ? [a, ''] : ['', a];
+}
+
+// 411064511 -> C-64511 (si le compte ne commence pas par 411, il est renvoyé tel quel).
+function refDepuisCompteClient(compte) {
+  const c = (compte || '').replace(/\s/g, '');
+  const m = /^411(\d+)$/.exec(c);
+  if (!m) return c;
+  const n = m[1].replace(/^0+/, '');
+  return n ? 'C-' + n : c;
+}
+
+// ===================================================================
+// Conversion
+// ===================================================================
+function convertir(rowsF, rowsR, P) {
+  const enTeteSortie = ['Journal','Date','Compte','Nom','Code','Dénomination','Débit','Crédit','Lettrage','Code TVA'];
+  const lignesSortie = [enTeteSortie];
+  const anomalies = [];
+
+  // ---------------------------------------------------------------
+  // 1. FACTURES / AVOIRS -> journal des ventes
+  // ---------------------------------------------------------------
+  let nbFactures = 0, htFactures = 0, tvaFactures = 0, ttcFactures = 0;
+  let nbAvoirs = 0, htAvoirs = 0, tvaAvoirs = 0, ttcAvoirs = 0;
+  const docs = new Map(); // numéro -> { type, date, numero, nom, code, ttc, encaisse }
+
+  if (rowsF) {
+    if (rowsF.length === 0) throw new Error("Fichier factures vide.");
+    const idx = {};
+    rowsF[0].forEach((h, i) => { idx[normKey(h)] = i; });
+
+    const need = ['Type','Date','Numéro','Objet','Total HT','Total TVA','Total TTC'];
+    const missing = need.filter(k => idx[k] === undefined);
+    if (missing.length) throw new Error("Fichier factures — colonnes manquantes : " + missing.join(', '));
+
+    const hasNomClient = idx['Nom du client'] !== undefined;
+    const hasRefClient = idx['Référence du client'] !== undefined;
+
+    for (let r = 1; r < rowsF.length; r++) {
+      const raw = rowsF[r];
+      if (estLigneVide(raw)) continue;
+      const get = k => (raw[idx[k]] || '').trim();
+      const typeDoc = get('Type');
+      const date = get('Date');
+      const numero = get('Numéro');
+      const objet = get('Objet');
+      const nomClient = hasNomClient ? get('Nom du client') : 'test';
+      const refClient = hasRefClient ? get('Référence du client') : '';
+      const totalHtStr = get('Total HT');
+      const totalTvaStr = get('Total TVA');
+      const totalTtcStr = get('Total TTC');
+
+      const totalHt = parseMontant(totalHtStr);
+      const totalTva = parseMontant(totalTvaStr);
+      const totalTtc = parseMontant(totalTtcStr);
+      if (Number.isNaN(totalHt) || Number.isNaN(totalTva) || Number.isNaN(totalTtc)) {
+        anomalies.push(`Factures, ligne ${r+1} ignorée (format de nombre invalide).`);
+        continue;
+      }
+
+      const libDoc = `${typeDoc || 'Document'} ${numero}`;
+      if (typeDoc === 'Facture') {
+        nbFactures++; htFactures += totalHt; tvaFactures += totalTva; ttcFactures += totalTtc;
+      } else if (typeDoc === 'Avoir') {
+        nbAvoirs++; htAvoirs += totalHt; tvaAvoirs += totalTva; ttcAvoirs += totalTtc;
+      } else {
+        anomalies.push(`Factures, ligne ${r+1} : type « ${typeDoc} » inconnu, écritures passées comme une facture mais exclues des cumuls.`);
+      }
+
+      if (ecart(totalHt + totalTva, totalTtc)) {
+        anomalies.push(`${libDoc} : TTC (${m2(totalTtc)}) ≠ HT + TVA (${m2(totalHt + totalTva)}), écart ${m2(totalTtc - totalHt - totalTva)} € — écriture déséquilibrée.`);
+      }
+
+      let codeTva = '', compteTva = '';
+      if (totalHt > 0) {
+        const taux = (totalTva / totalHt) * 100;
+        if (taux > 5.0 && taux < 6.0) { codeTva = 'v'; compteTva = '445715'; }
+        else if (taux > 9.5 && taux < 10.5) { codeTva = 'p'; compteTva = '445712'; }
+        else if (taux > 19.5 && taux < 20.5) { codeTva = 'Y'; compteTva = '445726'; }
+      }
+      if (!compteTva && Math.abs(totalTva) > EPS) {
+        const taux = totalHt ? (totalTva / totalHt) * 100 : 0;
+        anomalies.push(`${libDoc} : taux de TVA non reconnu (${taux.toFixed(2)} %), compte TVA laissé vide.`);
+      }
+
+      let debitHt = '', creditHt = '', debitTva = '', creditTva = '', debitTtc = '', creditTtc = '';
+      if (typeDoc === 'Avoir') { debitHt = totalHtStr; debitTva = totalTvaStr; creditTtc = totalTtcStr; }
+      else { creditHt = totalHtStr; creditTva = totalTvaStr; debitTtc = totalTtcStr; }
+
+      const code = refClient || numero;
+      lignesSortie.push([P.journalVentes, date, P.compteClient, nomClient, code, objet, debitTtc, creditTtc, '', '']);
+      lignesSortie.push([P.journalVentes, date, P.compteVente, nomClient, code, objet, debitHt, creditHt, '', codeTva]);
+      lignesSortie.push([P.journalVentes, date, compteTva, nomClient, code, objet, debitTva, creditTva, '', codeTva]);
+
+      if (numero && (typeDoc === 'Facture' || typeDoc === 'Avoir')) {
+        const exist = docs.get(numero);
+        if (exist) {
+          anomalies.push(`Numéro ${numero} présent plusieurs fois dans le fichier factures.`);
+          if (exist.type === typeDoc) exist.ttc += totalTtc;
+        } else {
+          docs.set(numero, { type: typeDoc, date, numero, nom: nomClient, code, ttc: totalTtc, encaisse: 0 });
+        }
+      }
+    }
+  }
+  const nbLignesVentes = lignesSortie.length - 1;
+
+  // ---------------------------------------------------------------
+  // 2. RÈGLEMENTS -> journal des règlements (58000 / 411CLI)
+  // ---------------------------------------------------------------
+  let nbReglements = 0, nbImputations = 0, totalEncaisse = 0;
+  let encSurFichier = 0, encHorsFichier = 0;
+  const parMode = new Map();
+  const horsFichier = [];
+  const exclus = [];
+
+  if (rowsR) {
+    if (rowsR.length === 0) throw new Error("Fichier règlements vide.");
+    const idx = {};
+    rowsR[0].forEach((h, i) => { idx[normKeyMaj(h)] = i; });
+    const has = k => idx[k] !== undefined;
+
+    const need = ['NUMERO', 'DATE REGLEMENT', 'FACTURE(S) REGLEE(S)'];
+    const missing = need.filter(k => !has(k));
+    if (!has('MONTANT IMPUTE') && !has('MONTANT')) missing.push('MONTANT IMPUTE');
+    if (missing.length) throw new Error("Fichier règlements — colonnes manquantes : " + missing.join(', '));
+    const colMontant = has('MONTANT IMPUTE') ? 'MONTANT IMPUTE' : 'MONTANT';
+    if (colMontant === 'MONTANT') {
+      anomalies.push("Fichier règlements : colonne MONTANT IMPUTE absente, la colonne MONTANT est utilisée.");
+    }
+
+    // Regroupement des lignes par numéro de règlement (un règlement peut couvrir plusieurs factures).
+    const groupes = new Map();
+    for (let r = 1; r < rowsR.length; r++) {
+      const raw = rowsR[r];
+      if (estLigneVide(raw)) continue;
+      const get = k => has(k) ? (raw[idx[k]] || '').trim() : '';
+      const numero = get('NUMERO');
+      const date = get('DATE REGLEMENT');
+      const mode = get('MODE REGLEMENT');
+      const facture = get('FACTURE(S) REGLEE(S)');
+      const compteCli = get('COMPTE(S) CLIENT');
+      const cavalier = get('NOM(S) CAVALIER(S)');
+      const etat = get('ETAT');
+      const libelle = get('LIBELLE');
+      const montantImpute = parseMontant(get(colMontant));
+      const montantTotal = parseMontant(get('MONTANT'));
+
+      if (has('ETAT') && !/^REGLEE?S?$/.test(sansAccents(etat).toUpperCase())) {
+        exclus.push({ numero, date, facture, nom: cavalier, etat, montant: Number.isNaN(montantImpute) ? montantTotal : montantImpute });
+        continue;
+      }
+      if (Number.isNaN(montantImpute)) {
+        anomalies.push(`Règlements, ligne ${r+1} ignorée (format de nombre invalide).`);
+        continue;
+      }
+      if (Math.abs(montantImpute) < EPS) {
+        anomalies.push(`Règlement ${numero || '(sans numéro)'}, ligne ${r+1} : montant imputé nul, ligne ignorée.`);
+        continue;
+      }
+
+      const doc = facture ? docs.get(facture) : undefined;
+      const nom = doc ? doc.nom : cavalier;
+      const code = doc ? doc.code : (refDepuisCompteClient(compteCli) || facture || numero);
+
+      const cle = numero || `__ligne${r}`;
+      let g = groupes.get(cle);
+      if (!g) {
+        g = { numero, date, mode, libelle: '', montantTotal, sommeMontants: 0, lignes: [] };
+        groupes.set(cle, g);
+      }
+      if (!g.libelle && libelle) g.libelle = libelle;
+      if (!Number.isNaN(montantTotal)) g.sommeMontants += montantTotal;
+      g.lignes.push({ facture, impute: montantImpute, nom, code, libelle, doc, ligne: r + 1 });
+    }
+
+    const libelleAuto = (numero, mode, factures) =>
+      ['Règlement' + (numero ? ' ' + numero : ''), mode, factures.length ? 'Fact. ' + factures.join(', ') : '']
+        .filter(Boolean).join(' - ');
+
+    for (const g of groupes.values()) {
+      const total = arrondi(g.lignes.reduce((s, l) => s + l.impute, 0));
+      const factures = [...new Set(g.lignes.map(l => l.facture).filter(Boolean))];
+      const premiere = g.lignes[0];
+      const libDebit = g.libelle || libelleAuto(g.numero, g.mode, factures);
+
+      // Un débit 58000 par règlement...
+      lignesSortie.push([P.journalReglements, g.date, P.compteEncaissement, premiere.nom, premiere.code, libDebit, ...sens(total, 'D'), '', '']);
+      // ... et un crédit 411CLI par facture imputée.
+      for (const l of g.lignes) {
+        const lib = l.libelle || libelleAuto(g.numero, g.mode, l.facture ? [l.facture] : []);
+        lignesSortie.push([P.journalReglements, g.date, P.compteClient, l.nom, l.code, lib, ...sens(l.impute, 'C'), '', '']);
+      }
+
+      // Contrôle MONTANT / MONTANT IMPUTE (MONTANT peut être le total répété sur chaque ligne, ou la part de la ligne).
+      if (colMontant === 'MONTANT IMPUTE' && !Number.isNaN(g.montantTotal)
+          && ecart(total, g.montantTotal) && ecart(total, g.sommeMontants)) {
+        anomalies.push(`Règlement ${g.numero || '(sans numéro)'} : MONTANT (${m2(g.montantTotal)}) ≠ total imputé (${m2(total)}).`);
+      }
+
+      nbReglements++;
+      nbImputations += g.lignes.length;
+      totalEncaisse += total;
+      const mode = g.mode || '(non renseigné)';
+      parMode.set(mode, (parMode.get(mode) || 0) + total);
+
+      for (const l of g.lignes) {
+        if (l.doc) {
+          l.doc.encaisse += l.impute;
+          encSurFichier += l.impute;
+          if (l.doc.type === 'Avoir') {
+            anomalies.push(`Règlement ${g.numero} imputé sur l'avoir ${l.doc.numero}.`);
+          }
+        } else {
+          encHorsFichier += l.impute;
+          horsFichier.push({ facture: l.facture, numero: g.numero, date: g.date, nom: l.nom, montant: l.impute });
+          if (!l.facture) {
+            anomalies.push(`Règlement ${g.numero || '(sans numéro)'}, ligne ${l.ligne} : aucun numéro de facture.`);
+          }
+        }
+      }
+    }
+  }
+  const nbLignesReglements = lignesSortie.length - 1 - nbLignesVentes;
+
+  // Trop-perçus.
+  for (const d of docs.values()) {
+    if (d.type === 'Facture' && d.encaisse - d.ttc > EPS) {
+      anomalies.push(`Facture ${d.numero} : encaissé ${m2(d.encaisse)} > TTC ${m2(d.ttc)} (trop-perçu ${m2(d.encaisse - d.ttc)} €).`);
+    }
+  }
+
+  // Contrôle d'équilibre du fichier généré.
+  let totalDebit = 0, totalCredit = 0, debitClient = 0, creditClient = 0;
+  for (let i = 1; i < lignesSortie.length; i++) {
+    const l = lignesSortie[i];
+    const d = parseMontant(l[6]) || 0, c = parseMontant(l[7]) || 0;
+    totalDebit += d; totalCredit += c;
+    if (l[2] === P.compteClient) { debitClient += d; creditClient += c; }
+  }
+  if (ecart(totalDebit, totalCredit)) {
+    anomalies.push(`Fichier généré déséquilibré : débit ${m2(totalDebit)} ≠ crédit ${m2(totalCredit)}.`);
+  }
+
+  // ---------------------------------------------------------------
+  // 3. COMPTE RENDU
+  // ---------------------------------------------------------------
+  const netHt = htFactures - htAvoirs;
+  const netTva = tvaFactures - tvaAvoirs;
+  const netTtc = ttcFactures - ttcAvoirs;
+
+  const nonSoldees = [...docs.values()]
+    .filter(d => d.type === 'Facture' && d.ttc - d.encaisse > EPS)
+    .map(d => ({ ...d, reste: d.ttc - d.encaisse }));
+  const totalResteDu = nonSoldees.reduce((s, d) => s + d.reste, 0);
+  const creancesFin = ttcFactures - ttcAvoirs - encSurFichier;
+
+  const W = 60;
+  const pad = n => m2(n).padStart(12, ' ');
+  const col = (s, w) => { s = String(s || ''); return s.length > w ? s.slice(0, w - 1) + '…' : s.padEnd(w, ' '); };
+  const sep = '='.repeat(W);
+  const sep2 = '-'.repeat(W);
+  const L = [];
+
+  L.push(sep);
+  L.push('      📝 COMPTE RENDU DU TRAITEMENT');
+  L.push(sep);
+  L.push(`Factures traitées : ${nbFactures}`);
+  L.push(`  - Cumul HT   : ${pad(htFactures)} €`);
+  L.push(`  - Cumul TVA  : ${pad(tvaFactures)} €`);
+  L.push(`  - Cumul TTC  : ${pad(ttcFactures)} €`);
+  if (nbAvoirs > 0) {
+    L.push(sep2);
+    L.push(`Avoirs traités    : ${nbAvoirs}`);
+    L.push(`  - Cumul HT   : ${pad(htAvoirs)} €`);
+    L.push(`  - Cumul TVA  : ${pad(tvaAvoirs)} €`);
+    L.push(`  - Cumul TTC  : ${pad(ttcAvoirs)} €`);
+  }
+  L.push(sep);
+  L.push('SOLDE NET (Factures - Avoirs)');
+  L.push(`  - Solde HT     : ${pad(netHt)} €`);
+  L.push(`  - Solde TVA    : ${pad(netTva)} €`);
+  L.push(`  - Solde TTC    : ${pad(netTtc)} €`);
+
+  L.push(sep);
+  L.push('      💶 ENCAISSEMENTS');
+  L.push(sep);
+  if (!rowsR) {
+    L.push('Aucun fichier règlements fourni.');
+  } else {
+    L.push(`Règlements comptabilisés : ${nbReglements} (${nbImputations} imputation(s) sur facture)`);
+    L.push(`  - Total encaissé                 : ${pad(totalEncaisse)} €`);
+    if (parMode.size) {
+      L.push('  Par mode de règlement :');
+      for (const [mode, montant] of [...parMode.entries()].sort((a, b) => b[1] - a[1])) {
+        L.push(`      ${col(mode, 27)}: ${pad(montant)} €`);
+      }
+    }
+    L.push(sep2);
+    L.push(`  - Sur factures du fichier        : ${pad(encSurFichier)} €`);
+    L.push(`  - Sur factures hors fichier      : ${pad(encHorsFichier)} €`);
+    if (horsFichier.length) {
+      L.push('    (factures antérieures ou absentes du fichier factures)');
+      for (const h of horsFichier) {
+        L.push(`      Fact. ${col(h.facture || '?', 8)} ${col(h.numero, 9)} ${col(h.date, 10)} ${col(h.nom, 14)} ${pad(h.montant)} €`);
+      }
+    }
+    if (exclus.length) {
+      L.push(sep2);
+      const totalExclus = exclus.reduce((s, e) => s + (Number.isNaN(e.montant) ? 0 : e.montant), 0);
+      L.push(`Règlements exclus (état ≠ « Réglé ») : ${exclus.length} ligne(s), ${m2(totalExclus)} €`);
+      for (const e of exclus) {
+        L.push(`      ${col(e.numero, 9)} ${col(e.date, 10)} Fact. ${col(e.facture, 8)} ${col(e.nom, 12)} ${col(e.etat || '(vide)', 10)} ${Number.isNaN(e.montant) ? '' : m2(e.montant) + ' €'}`);
+      }
+    }
+  }
+
+  L.push(sep);
+  L.push('      📌 CRÉANCES FIN (factures du fichier)');
+  L.push(sep);
+  L.push(`  - TTC factures                   : ${pad(ttcFactures)} €`);
+  if (nbAvoirs > 0) {
+    L.push(`  - Avoirs                         : ${pad(-ttcAvoirs)} €`);
+  }
+  L.push(`  - Encaissé sur ces factures      : ${pad(-encSurFichier)} €`);
+  L.push(`  = CRÉANCES FIN                   : ${pad(creancesFin)} €`);
+  L.push(sep2);
+  L.push(`Factures non soldées : ${nonSoldees.length}`);
+  if (nonSoldees.length) {
+    L.push(`  ${col('N°', 8)} ${col('Date', 10)} ${col('Client', 16)} ${'TTC'.padStart(10)} ${'Encaissé'.padStart(10)} ${'Reste dû'.padStart(10)}`);
+    for (const d of nonSoldees) {
+      L.push(`  ${col(d.numero, 8)} ${col(d.date, 10)} ${col(d.nom, 16)} ${m2(d.ttc).padStart(10)} ${m2(d.encaisse).padStart(10)} ${m2(d.reste).padStart(10)}`);
+    }
+    L.push(`  ${col('Total reste dû', 36)} ${''.padStart(10)} ${''.padStart(10)} ${m2(totalResteDu).padStart(10)}`);
+  }
+  if (nbAvoirs > 0) {
+    L.push(`  Les avoirs (${m2(ttcAvoirs)} €) ne sont pas rattachés à une facture :`);
+    L.push('  ils sont déduits du total des créances, pas de la liste.');
+  }
+
+  L.push(sep);
+  L.push('      🔎 CONTRÔLE DU FICHIER GÉNÉRÉ');
+  L.push(sep);
+  L.push(`Lignes d'écritures : ${nbLignesVentes} ventes (journal ${P.journalVentes}), ${nbLignesReglements} règlements (journal ${P.journalReglements})`);
+  L.push(`  - Total débit                    : ${pad(totalDebit)} €`);
+  L.push(`  - Total crédit                   : ${pad(totalCredit)} €`);
+  L.push(`  - Solde compte ${col(P.compteClient, 18)}: ${pad(debitClient - creditClient)} € (débiteur si positif)`);
+
+  L.push(sep);
+  L.push(`      ⚠️ ANOMALIES : ${anomalies.length}`);
+  L.push(sep);
+  if (anomalies.length === 0) {
+    L.push('Aucune anomalie détectée.');
+  } else {
+    for (const a of anomalies) L.push('  • ' + a);
+  }
+  L.push(sep);
+
+  return { rows: lignesSortie, rapport: L.join('\n'), anomalies };
+}
+
+// ===================================================================
+// Paramètres
+// ===================================================================
+const PARAM_DEFAUTS = {
+  journalVentes: '2',
+  journalReglements: '20',
+  compteVente: '7061',
+  compteClient: '411CLI',
+  compteEncaissement: '58000',
+};
+const PARAM_CHAMPS = {
+  journalVentes: 'pJournalVentes',
+  journalReglements: 'pJournalReglements',
+  compteVente: 'pCompteVente',
+  compteClient: 'pCompteClient',
+  compteEncaissement: 'pCompteEncaissement',
+};
+const PARAM_LIBELLES = {
+  journalVentes: 'Journal ventes',
+  journalReglements: 'Journal règlements',
+  compteVente: 'Compte de vente',
+  compteClient: 'Compte client',
+  compteEncaissement: "Compte d'encaissement",
+};
+const STORAGE_KEY = 'convertisseurVentesReglements.params';
+
+function chargerParams() {
+  let enregistres = {};
+  try { enregistres = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; } catch (_) { enregistres = {}; }
+  for (const k in PARAM_CHAMPS) {
+    const v = typeof enregistres[k] === 'string' && enregistres[k].trim() ? enregistres[k] : PARAM_DEFAUTS[k];
+    document.getElementById(PARAM_CHAMPS[k]).value = v;
+  }
+}
+function lireParams() {
+  const P = {};
+  for (const k in PARAM_CHAMPS) {
+    const v = document.getElementById(PARAM_CHAMPS[k]).value.trim();
+    if (!v) throw new Error(`Paramètre « ${PARAM_LIBELLES[k]} » vide.`);
+    P[k] = v;
+  }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(P)); } catch (_) { /* stockage indisponible */ }
+  return P;
+}
+
+// ===================================================================
+// Interface
+// ===================================================================
+const fileFactures = document.getElementById('fileFactures');
+const fileReglements = document.getElementById('fileReglements');
+const btnConvert = document.getElementById('convert');
+const btnDownload = document.getElementById('download');
+const btnReset = document.getElementById('resetParams');
+const statusEl = document.getElementById('status');
+const reportPanel = document.getElementById('reportPanel');
+const reportEl = document.getElementById('report');
+
+let outputBlobUrl = null;
+
+function invaliderResultat() {
+  btnDownload.disabled = true;
+  if (outputBlobUrl) { URL.revokeObjectURL(outputBlobUrl); outputBlobUrl = null; }
+}
+
+function majEtat() {
+  const f = fileFactures.files[0], r = fileReglements.files[0];
+  btnConvert.disabled = !f && !r;
+  invaliderResultat();
+  reportPanel.style.display = 'none';
+  const parts = [];
+  if (f) parts.push(`factures : ${f.name}`);
+  if (r) parts.push(`règlements : ${r.name}`);
+  statusEl.textContent = parts.length ? 'Fichiers sélectionnés — ' + parts.join(' · ') : '';
+  if (f && !r) statusEl.textContent += ' (aucun fichier règlements : seules les ventes seront générées)';
+  if (!f && r) statusEl.textContent += ' (aucun fichier factures : tous les règlements seront « hors fichier »)';
+  statusEl.className = 'status';
+}
+
+fileFactures.addEventListener('change', majEtat);
+fileReglements.addEventListener('change', majEtat);
+for (const k in PARAM_CHAMPS) {
+  document.getElementById(PARAM_CHAMPS[k]).addEventListener('input', () => {
+    if (!btnDownload.disabled) {
+      invaliderResultat();
+      statusEl.textContent = 'Paramètres modifiés : cliquez à nouveau sur « Convertir ».';
+      statusEl.className = 'status warn';
+    }
+  });
+}
+btnReset.addEventListener('click', () => {
+  for (const k in PARAM_CHAMPS) document.getElementById(PARAM_CHAMPS[k]).value = PARAM_DEFAUTS[k];
+  try { localStorage.removeItem(STORAGE_KEY); } catch (_) { /* stockage indisponible */ }
+  if (!btnDownload.disabled) {
+    invaliderResultat();
+    statusEl.textContent = 'Paramètres modifiés : cliquez à nouveau sur « Convertir ».';
+    statusEl.className = 'status warn';
+  }
+});
+
+async function lireFichier(file) {
+  if (!file) return null;
+  const { text, encoding } = decodeAuto(await file.arrayBuffer());
+  return { rows: parseCSV(text, ';'), encoding };
+}
+
+btnConvert.addEventListener('click', async () => {
+  const fF = fileFactures.files[0], fR = fileReglements.files[0];
+  if (!fF && !fR) return;
+  statusEl.textContent = 'Conversion en cours…';
+  statusEl.className = 'status';
+  try {
+    const P = lireParams();
+    const factures = await lireFichier(fF);
+    const reglements = await lireFichier(fR);
+    const { rows: outRows, rapport, anomalies } = convertir(factures && factures.rows, reglements && reglements.rows, P);
+    const csvText = serializeCSV(outRows, ';');
+    const encoding = (factures || reglements).encoding;
+    let bytes, mime;
+    if (encoding === 'utf-8') {
+      // BOM UTF-8 pour la compatibilité Excel.
+      const utf8 = new TextEncoder().encode(csvText);
+      bytes = new Uint8Array(utf8.length + 3);
+      bytes[0] = 0xEF; bytes[1] = 0xBB; bytes[2] = 0xBF;
+      bytes.set(utf8, 3);
+      mime = 'text/csv;charset=utf-8';
+    } else {
+      bytes = encodeWin1252(csvText);
+      mime = 'text/csv;charset=windows-1252';
+    }
+    const blob = new Blob([bytes], { type: mime });
+    if (outputBlobUrl) URL.revokeObjectURL(outputBlobUrl);
+    outputBlobUrl = URL.createObjectURL(blob);
+
+    reportEl.textContent = rapport;
+    reportPanel.style.display = 'block';
+
+    let msg = '✅ Conversion terminée. Cliquez sur « Télécharger out.csv ».';
+    if (anomalies.length) msg += ` ⚠️ ${anomalies.length} anomalie(s) : voir le compte rendu.`;
+    statusEl.textContent = msg;
+    statusEl.className = anomalies.length ? 'status warn' : 'status ok';
+    btnDownload.disabled = false;
+  } catch (e) {
+    statusEl.textContent = '❌ Erreur : ' + e.message;
+    statusEl.className = 'status err';
+    invaliderResultat();
+  }
+});
+
+btnDownload.addEventListener('click', () => {
+  if (!outputBlobUrl) return;
+  const a = document.createElement('a');
+  a.href = outputBlobUrl;
+  a.download = 'out.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+});
+
+chargerParams();
+</script>
+</body>
+</html>
