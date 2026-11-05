@@ -129,7 +129,7 @@
     <div class="row" style="margin-top: 8px;">
       <button id="resetParams" class="link" type="button">Rétablir les valeurs par défaut</button>
     </div>
-    <div class="hint">TVA : 5,5 % → 445715 (code v), 10 % → 445712 (code p), comme l'outil précédent.</div>
+    <div class="hint">TVA : 5,5 % → 445715 (code v), 10 % → 445712 (code p), 20 % → 445726 (code Y).</div>
   </div>
 
   <div class="panel">
@@ -347,6 +347,7 @@ function convertir(rowsF, rowsR, P) {
         const taux = (totalTva / totalHt) * 100;
         if (taux > 5.0 && taux < 6.0) { codeTva = 'v'; compteTva = '445715'; }
         else if (taux > 9.5 && taux < 10.5) { codeTva = 'p'; compteTva = '445712'; }
+        else if (taux > 19.5 && taux < 20.5) { codeTva = 'Y'; compteTva = '445726'; }
       }
       if (!compteTva && Math.abs(totalTva) > EPS) {
         const taux = totalHt ? (totalTva / totalHt) * 100 : 0;
